@@ -1,6 +1,10 @@
+﻿#define BUF_SIZE 1024*10
+
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include <QElapsedTimer>
 #include <QNetworkProxy>
+#include <QTimer>
 
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
@@ -84,16 +88,16 @@ void MainWindow::discardSocket()
 void MainWindow::displayError(QAbstractSocket::SocketError socketError)
 {
     switch (socketError) {
-        case QAbstractSocket::RemoteHostClosedError:
+    case QAbstractSocket::RemoteHostClosedError:
         break;
-        case QAbstractSocket::HostNotFoundError:
-            QMessageBox::information(this, "QTCPClient", "The host was not found. Please check the host name and port settings.");
+    case QAbstractSocket::HostNotFoundError:
+        QMessageBox::information(this, "QTCPClient", "The host was not found. Please check the host name and port settings.");
         break;
-        case QAbstractSocket::ConnectionRefusedError:
-            QMessageBox::information(this, "QTCPClient", "The connection was refused by the peer. Make sure QTCPServer is running, and check that the host name and port settings are correct.");
+    case QAbstractSocket::ConnectionRefusedError:
+        QMessageBox::information(this, "QTCPClient", "The connection was refused by the peer. Make sure QTCPServer is running, and check that the host name and port settings are correct.");
         break;
-        default:
-            QMessageBox::information(this, "QTCPClient", QString("The following error occurred: %1.").arg(socket->errorString()));
+    default:
+        QMessageBox::information(this, "QTCPClient", QString("The following error occurred: %1.").arg(socket->errorString()));
         break;
     }
 }
@@ -105,18 +109,8 @@ void MainWindow::on_pushButton_sendMessage_clicked()
         if(socket->isOpen())
         {
             QString str = ui->lineEdit_message->text();
-
-            QDataStream socketStream(socket);
-            socketStream.setVersion(QDataStream::Qt_5_12);
-
-            QByteArray header;
-            header.prepend(QString("fileType:message,fileName:null,fileSize:%1;").arg(str.size()).toUtf8());
-            header.resize(128);
-
-            QByteArray byteArray = str.toUtf8();
-            byteArray.prepend(header);
-
-            socketStream << byteArray;
+            qDebug() << "str=" << str;
+            socket->write(str.toUtf8());
 
             ui->lineEdit_message->clear();
         }
@@ -126,14 +120,21 @@ void MainWindow::on_pushButton_sendMessage_clicked()
     else
         QMessageBox::critical(this,"QTCPClient","Not connected");
 }
+void MainWindow::wait( int ms )
+{
+   QElapsedTimer timer;
+   timer.start();
 
+   while ( timer.elapsed() < ms )
+       QCoreApplication::processEvents();
+}
 void MainWindow::on_pushButton_sendAttachment_clicked()
 {
     if(socket)
     {
         if(socket->isOpen())
         {
-            QString filePath = QFileDialog::getOpenFileName(this, ("Select an attachment"), QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), ("File (*.json *.txt *.png *.jpg *.jpeg)"));
+            QString filePath = QFileDialog::getOpenFileName(this, ("Select an attachment"), QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), ("File (*.mp4 *.txt *.png *.jpg *.jpeg)"));
 
             if(filePath.isEmpty()){
                 QMessageBox::critical(this,"QTCPClient","You haven't selected any attachment!");
@@ -141,25 +142,36 @@ void MainWindow::on_pushButton_sendAttachment_clicked()
             }
 
             QFile m_file(filePath);
-            if(m_file.open(QIODevice::ReadOnly)){
-
-                QFileInfo fileInfo(m_file.fileName());
-                QString fileName(fileInfo.fileName());
-
+            if(m_file.open(QIODevice::ReadOnly))
+            {
                 QDataStream socketStream(socket);
                 socketStream.setVersion(QDataStream::Qt_5_12);
 
-                QByteArray header;
-                header.prepend(QString("fileType:attachment,fileName:%1,fileSize:%2;").arg(fileName).arg(m_file.size()).toUtf8());
-                header.resize(128);
+                int len = 0;
+                int file_size = m_file.size();
+                int send_size = 0;
 
-                QByteArray byteArray = m_file.readAll();
-                byteArray.prepend(header);
+                do{
+                    QByteArray header;
+                    header.prepend(QString("fileSize:%1,leftSize:%2;").arg(file_size).arg(m_file.size()-send_size).toUtf8());
+                    header.resize(128);
 
-                socketStream.setVersion(QDataStream::Qt_5_12);
-                socketStream << byteArray;
-            }else
-                QMessageBox::critical(this,"QTCPClient","Attachment is not readable!");
+                    QByteArray buf_str;
+                    buf_str = m_file.read(BUF_SIZE);
+
+                    len = buf_str.length();
+                    header.append(buf_str);
+
+                    socketStream.setVersion(QDataStream::Qt_5_12);
+                    socketStream << header;
+
+                    send_size += len;
+
+                    socket->waitForBytesWritten();
+                    wait(100);
+                    qDebug() << "leftSize=" << (file_size-send_size) << ", header.len="<<header.length();
+                }while((file_size-send_size) > 0);
+            }
         }
         else
             QMessageBox::critical(this,"QTCPClient","Socket doesn't seem to be opened");
@@ -183,6 +195,7 @@ void MainWindow::on_btn_setting_clicked()
 
 void MainWindow::on_btn_start_clicked()
 {
+    ui->btn_start->setEnabled(false);
     socket->connectToHost(ipaddr,port.toInt());
 
     if(socket->waitForConnected())
